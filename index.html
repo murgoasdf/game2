@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>심플 피하기 게임</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0f172a">
+    <style>
+        /* CSS: 게임을 예쁘게 꾸미는 곳 */
+        body {
+            margin: 0;
+            overflow: hidden; /* 스크롤 방지 */
+            background-color: #0f172a; /* 짙은 남색 배경 */
+            font-family: 'Inter', system-ui, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            user-select: none; /* 텍스트 선택 방지 */
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent; /* 모바일 터치 하이라이트 제거 */
+            touch-action: manipulation;
+        }
+
+        #game-container {
+            position: relative;
+            /* border-radius + overflow:hidden은 container에 두는 게 올바름 */
+            /* canvas에 border-radius를 직접 적용하면 GPU 가속이 꺼지고 소프트웨어 렌더링으로 전환됨 */
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.5);
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(15, 23, 42, 0.95);
+            z-index: 10;
+            overflow-y: auto;
+            box-sizing: border-box;
+            padding: 20px 0;
+        }
+
+        h1 { 
+            margin-bottom: 20px; 
+            font-size: 3.5rem; 
+            font-weight: 900;
+            background: linear-gradient(to bottom, #fff, #22d3ee);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 10px 40px rgba(34, 211, 238, 0.3);
+            letter-spacing: -0.05em;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        #menu-player {
+            width: 60px;
+            height: 60px;
+            background: #22d3ee;
+            border-radius: 50%; /* 원형으로 변경 */
+            margin-bottom: 30px;
+            box-shadow: 0 0 30px #22d3ee;
+            animation: rotate 6s linear infinite;
+        }
+
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .instructions {
+            margin-bottom: 40px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        .key-hint {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            font-family: monospace;
+            margin: 0 4px;
+        }
+
+        button {
+            padding: 18px 48px;
+            font-size: 1.25rem;
+            font-weight: 800;
+            color: #0f172a;
+            background: linear-gradient(135deg, #22d3ee 0%, #06b6d4 100%);
+            border: none;
+            border-radius: 50px; /* 둥근 버튼 */
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(34, 211, 238, 0.4);
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        button:hover {
+            transform: translateY(-5px) scale(1.05);
+            box-shadow: 0 10px 30px rgba(34, 211, 238, 0.6);
+            background: linear-gradient(135deg, #67e8f9 0%, #22d3ee 100%);
+        }
+
+        button:active {
+            transform: translateY(0) scale(0.98);
+        }
+
+        canvas:focus {
+            outline: none; /* 선택 시 테두리 제거 */
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- 캔버스: 게임이 실제로 그려지는 도화지 -->
+        <canvas id="gameCanvas" width="800" height="900"></canvas>
+
+        <!-- UI 레이어: 시작/튜토리얼/게임오버 화면 -->
+        <div id="ui-overlay">
+            <div id="ui-buttons">
+                <button id="startBtn">📖 게임 설명 보기</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // JavaScript: 게임의 두뇌 (작동 원리)
+        const canvas = document.getElementById('gameCanvas');
+        // [최적화] willReadFrequently: false — 쓰기 위주 캔버스임을 브라우저에 알려 GPU 가속 유도
+        const ctx = canvas.getContext('2d', { willReadFrequently: false, alpha: false });
+        const uiOverlay = document.getElementById('ui-overlay');
+        const uiButtons = document.getElementById('ui-buttons');
+
+        // 상태 관리
+        let isGameRunning = false;
+        let isPaused = false;
+        let score = 0;
+        let scoreFrameCounter = 0;
+        let highScore = 0;
+        let spawnTimer = 0;
+        let itemSpawnTimer = 0;
+        let items = [];
+        let hasShield = false;
+        let speedBuffTimer = 0;   // 프레임 단위
+        let doubleScoreTimer = 0; // 프레임 단위
+        let lives = 3;
+        let animationId = null;
+
+        // [최적화] 하트/아이템 아이콘을 이모지 대신 미리 그린 OffscreenCanvas 캐시로 교체
+        const ICON_SIZE = 32;
+
+        function makeHeartIcon() {
+            const oc = document.createElement('canvas');
+            oc.width = ICON_SIZE; oc.height = ICON_SIZE;
+            const c = oc.getContext('2d');
+            c.fillStyle = '#ef4444';
+            c.beginPath();
+            c.moveTo(16, 28);
+            c.bezierCurveTo(4, 20, 0, 12, 0, 9);
+            c.bezierCurveTo(0, 4, 4, 2, 8, 2);
+            c.bezierCurveTo(12, 2, 14, 4, 16, 8);
+            c.bezierCurveTo(18, 4, 20, 2, 24, 2);
+            c.bezierCurveTo(28, 2, 32, 4, 32, 9);
+            c.bezierCurveTo(32, 12, 28, 20, 16, 28);
+            c.fill();
+            return oc;
+        }
+
+        function makeShieldIcon() {
+            const oc = document.createElement('canvas');
+            oc.width = ICON_SIZE; oc.height = ICON_SIZE;
+            const c = oc.getContext('2d');
+            c.strokeStyle = '#fff';
+            c.lineWidth = 3;
+            c.fillStyle = 'rgba(255,255,255,0.15)';
+            const cx = ICON_SIZE / 2, cy = ICON_SIZE / 2;
+            c.beginPath();
+            c.moveTo(cx, 4);
+            c.lineTo(cx + 10, 9);
+            c.lineTo(cx + 10, 20);
+            c.bezierCurveTo(cx + 10, 26, cx, 29, cx, 29);
+            c.bezierCurveTo(cx, 29, cx - 10, 26, cx - 10, 20);
+            c.lineTo(cx - 10, 9);
+            c.closePath();
+            c.fill();
+            c.stroke();
+            return oc;
+        }
+
+        function makeLightningIcon() {
+            const oc = document.createElement('canvas');
+            oc.width = ICON_SIZE; oc.height = ICON_SIZE;
+            const c = oc.getContext('2d');
+            c.fillStyle = '#fff';
+            c.beginPath();
+            c.moveTo(20, 4);
+            c.lineTo(10, 18);
+            c.lineTo(16, 18);
+            c.lineTo(12, 28);
+            c.lineTo(24, 14);
+            c.lineTo(18, 14);
+            c.closePath();
+            c.fill();
+            return oc;
+        }
+
+        // 별 대신 "x2" 텍스트 아이콘
+        function makeX2Icon() {
+            const oc = document.createElement('canvas');
+            oc.width = ICON_SIZE; oc.height = ICON_SIZE;
+            const c = oc.getContext('2d');
+            c.fillStyle = '#fff';
+            c.font = 'bold 18px sans-serif';
+            c.textAlign = 'center';
+            c.textBaseline = 'middle';
+            c.fillText('x2', ICON_SIZE / 2, ICON_SIZE / 2 + 1);
+            return oc;
+        }
+
+        const heartIcon     = makeHeartIcon();
+        const shieldIcon    = makeShieldIcon();
+        const lightningIcon = makeLightningIcon();
+        const x2Icon        = makeX2Icon();
+
+        // 0. PWA 서비스 워커 등록
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js')
+                    .then(reg => console.log('Service Worker 등록 성공!'))
+                    .catch(err => console.log('Service Worker 등록 실패:', err));
+            });
+        }
+
+        window.addEventListener('contextmenu', e => e.preventDefault());
+        canvas.addEventListener('mousedown', () => canvas.focus());
+        canvas.tabIndex = 1;
+
+        // 1. 플레이어 정의
+        const player = {
+            x: canvas.width / 2 - 25,
+            y: canvas.height - 100,
+            width: 50,
+            height: 50,
+            color: '#22d3ee',
+            speed: 7   // px per frame (60fps 기준 유지)
+        };
+
+        // 키 상태
+        const keys = {};
+        window.addEventListener('keydown', e => {
+            keys[e.code] = true;
+            if (e.code === 'Escape' && isGameRunning) togglePause();
+        });
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        function togglePause() {
+            isPaused = !isPaused;
+            if (isPaused) {
+                showPauseMenu();
+            } else {
+                uiOverlay.style.display = 'none';
+                if (animationId === null) {
+                    animationId = requestAnimationFrame(gameLoop);
+                }
+            }
+        }
+
+        function showPauseMenu() {
+            uiOverlay.innerHTML = `
+                <div id="ui-buttons">
+                    <button onclick="togglePause()" style="margin-bottom: 15px; width: 220px;">계속하기 (ESC)</button>
+                    <br>
+                    <button onclick="startGame()" style="margin-bottom: 15px; width: 220px; background: #0ea5e9;">다시 시작</button>
+                    <br>
+                    <button onclick="location.reload()" style="background: #334155; box-shadow: 0 4px 20px rgba(51, 65, 85, 0.4); width: 220px; font-size: 1rem; padding: 12px;">처음으로</button>
+                </div>
+            `;
+            uiOverlay.style.display = 'flex';
+        }
+
+        let obstacles = [];
+
+        // [최적화] 장애물 최대 수 제한으로 폭증 방지
+        const MAX_OBSTACLES = 18;
+        const MAX_ITEMS = 5;
+
+        // 골고루 배치를 위한 구역 순환 변수 (캔버스를 4구역으로 분할)
+        let spawnZone = 0;
+
+        function spawnObstacle() {
+            if (obstacles.length >= MAX_OBSTACLES) return;
+            const size = Math.random() * (60 - 20) + 20;
+            const speedMultiplier = Math.min(2.5, 1 + (score / 80));
+            const baseSpeed = Math.random() * (5 - 3) + 3;
+
+            // 4구역 순환: 각 구역 안에서는 랜덤 위치
+            const zoneW = (canvas.width - size) / 4;
+            const x = spawnZone * zoneW + Math.random() * zoneW;
+            spawnZone = (spawnZone + 1) % 4;
+
+            obstacles.push({
+                x: Math.min(x, canvas.width - size),
+                y: -size,
+                width: size,
+                height: size,
+                color: '#f87171',
+                speed: baseSpeed * speedMultiplier
+            });
+        }
+
+        function spawnItem() {
+            if (items.length >= MAX_ITEMS) return;
+            const size = 45;
+            const rand = Math.random();
+            let type, color;
+            if (rand < 0.33) {
+                type = 'shield'; color = '#22d3ee';
+            } else if (rand < 0.66) {
+                type = 'lightning'; color = '#facc15';
+            } else {
+                type = 'star'; color = '#a855f7';
+            }
+            items.push({
+                x: Math.random() * (canvas.width - size),
+                y: -size,
+                width: size,
+                height: size,
+                type, color,
+                speed: Math.random() * (5 - 3) + 3
+            });
+        }
+
+        function initMenu() {
+            uiOverlay.style.display = 'flex';
+            showTutorial();
+        }
+
+        // ── 튜토리얼(설명서) 화면 ──────────────────────────────────
+        window.showTutorial = function() {
+            uiOverlay.innerHTML = `
+                <div style="text-align:center; max-width:520px; padding: 0 20px;">
+                    <h1 style="font-size:2.4rem; margin-bottom:6px;">심플 피하기 게임</h1>
+                    <p style="color:rgba(255,255,255,0.5); font-size:0.85rem; margin-bottom:24px;">
+                        게임을 시작하기 전에 조작법과 아이템을 확인하세요!
+                    </p>
+
+                    <!-- 조작법 -->
+                    <div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1);
+                                border-radius:12px; padding:16px 20px; margin-bottom:16px; text-align:left;">
+                        <div style="font-weight:800; color:#22d3ee; margin-bottom:10px; font-size:0.95rem;">🎮 조작법</div>
+                        <div style="color:rgba(255,255,255,0.8); font-size:0.88rem; line-height:2;">
+                            <span style="background:rgba(255,255,255,0.12); padding:3px 9px; border-radius:5px; border:1px solid rgba(255,255,255,0.2); font-family:monospace;">← →</span>
+                            또는
+                            <span style="background:rgba(255,255,255,0.12); padding:3px 9px; border-radius:5px; border:1px solid rgba(255,255,255,0.2); font-family:monospace;">A D</span>
+                            &nbsp;— 좌우 이동<br>
+                            <span style="background:rgba(255,255,255,0.12); padding:3px 9px; border-radius:5px; border:1px solid rgba(255,255,255,0.2); font-family:monospace;">ESC</span>
+                            &nbsp;— 일시정지 / 재개
+                        </div>
+                    </div>
+
+                    <!-- 게임 방법 -->
+                    <div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1);
+                                border-radius:12px; padding:16px 20px; margin-bottom:16px; text-align:left;">
+                        <div style="font-weight:800; color:#22d3ee; margin-bottom:10px; font-size:0.95rem;">📌 게임 방법</div>
+                        <div style="color:rgba(255,255,255,0.8); font-size:0.88rem; line-height:1.9;">
+                            • 위에서 떨어지는 <span style="color:#f87171; font-weight:700;">빨간 원</span>을 피하세요.<br>
+                            • 맞으면 <span style="color:#ef4444; font-weight:700;">즉시 게임 오버</span>! (목숨 1개)<br>
+                            • 살아있는 시간만큼 점수가 오릅니다.<br>
+                            • 시간이 지날수록 장애물이 조금씩 많아져요.
+                        </div>
+                    </div>
+
+                    <!-- 아이템 -->
+                    <div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1);
+                                border-radius:12px; padding:16px 20px; margin-bottom:24px; text-align:left;">
+                        <div style="font-weight:800; color:#22d3ee; margin-bottom:12px; font-size:0.95rem;">✨ 아이템 (20초마다 등장)</div>
+
+                        <!-- 보호막 -->
+                        <div style="display:flex; align-items:center; margin-bottom:12px; gap:12px;">
+                            <div style="width:44px; height:44px; border-radius:50%; background:#22d3ee;
+                                        display:flex; align-items:center; justify-content:center; flex-shrink:0;
+                                        box-shadow:0 0 10px #22d3ee44;">
+                                <svg width="22" height="24" viewBox="0 0 22 24" fill="none">
+                                    <path d="M11 1L2 5v7c0 5.25 3.85 10.15 9 11.33C16.15 22.15 20 17.25 20 12V5L11 1z"
+                                          fill="rgba(255,255,255,0.15)" stroke="white" stroke-width="2"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <div style="font-weight:700; color:#22d3ee; font-size:0.9rem;">하늘색 원 — 보호막</div>
+                                <div style="color:rgba(255,255,255,0.65); font-size:0.82rem;">장애물 한 번을 대신 막아줍니다. 맞으면 보호막 소멸.</div>
+                            </div>
+                        </div>
+
+                        <!-- 이속 UP -->
+                        <div style="display:flex; align-items:center; margin-bottom:12px; gap:12px;">
+                            <div style="width:44px; height:44px; border-radius:50%; background:#facc15;
+                                        display:flex; align-items:center; justify-content:center; flex-shrink:0;
+                                        box-shadow:0 0 10px #facc1544;">
+                                <svg width="16" height="24" viewBox="0 0 16 24" fill="white">
+                                    <polygon points="12,2 4,14 8,14 4,22 14,10 10,10"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <div style="font-weight:700; color:#facc15; font-size:0.9rem;">노란색 원 — 이속 UP ⚡</div>
+                                <div style="color:rgba(255,255,255,0.65); font-size:0.82rem;">5초 동안 이동 속도가 빨라집니다. 플레이어가 노란색으로 변해요.</div>
+                            </div>
+                        </div>
+
+                        <!-- x2 -->
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <div style="width:44px; height:44px; border-radius:50%; background:#a855f7;
+                                        display:flex; align-items:center; justify-content:center; flex-shrink:0;
+                                        box-shadow:0 0 10px #a855f744;">
+                                <span style="font-weight:900; font-size:16px; color:white;">x2</span>
+                            </div>
+                            <div>
+                                <div style="font-weight:700; color:#a855f7; font-size:0.9rem;">보라색 원 — 점수 x2</div>
+                                <div style="color:rgba(255,255,255,0.65); font-size:0.82rem;">6초 동안 점수가 2배로 쌓입니다.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="startGame()" style="width:240px; font-size:1.1rem;">🚀 게임 시작!</button>
+                </div>
+            `;
+            uiOverlay.style.display = 'flex';
+            uiOverlay.style.overflowY = 'auto';
+        };
+
+        function gameOver() {
+            isGameRunning = false;
+            if (animationId !== null) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            if (score > highScore) highScore = score;
+
+            uiOverlay.innerHTML = `
+                <h1 style="color: #f87171; background: none; -webkit-text-fill-color: #f87171; font-size: 4rem;">GAME OVER</h1>
+                <div style="margin-bottom: 30px; text-align: center;">
+                    <p style="font-size: 1.8rem; margin: 5px 0;">Score: <span style="color: #fff; font-weight: bold;">${score}</span></p>
+                    <p style="font-size: 1.2rem; color: #22d3ee; font-weight: bold; margin: 5px 0;">Best: ${highScore}</p>
+                </div>
+                <div id="ui-buttons">
+                    <button onclick="startGame()" style="margin-bottom: 15px; width: 220px;">다시 시작</button>
+                    <br>
+                    <button onclick="showTutorial()" style="margin-bottom: 15px; width: 220px; background: #0ea5e9; font-size:1rem; padding:12px;">📖 설명 보기</button>
+                    <br>
+                    <button onclick="location.reload()" style="background: #334155; box-shadow: 0 4px 20px rgba(51, 65, 85, 0.4); width: 220px; font-size: 1rem; padding: 12px;">처음으로</button>
+                </div>
+            `;
+            uiOverlay.style.display = 'flex';
+        }
+
+        window.startGame = function() {
+            score = 0;
+            scoreFrameCounter = 0;
+            spawnTimer = 0;
+            itemSpawnTimer = 0;
+            spawnZone = 0;
+            obstacles = [];
+            items = [];
+            hasShield = false;
+            speedBuffTimer = 0;
+            doubleScoreTimer = 0;
+            lives = 1;
+            player.speed = 7;
+            player.x = canvas.width / 2 - 25;
+            player.y = canvas.height - 100;
+            isGameRunning = true;
+            isPaused = false;
+
+            uiOverlay.style.display = 'none';
+
+            if (animationId !== null) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            animationId = requestAnimationFrame(gameLoop);
+        };
+
+        // --- 메인 엔진 (프레임 기반) ---
+        function gameLoop() {
+            if (!isGameRunning || isPaused) {
+                animationId = null;
+                return;
+            }
+            update();
+            draw();
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        function update() {
+            // 플레이어 이동
+            if ((keys['ArrowLeft'] || keys['KeyA']) && player.x > 0)
+                player.x = Math.max(0, player.x - player.speed);
+            if ((keys['ArrowRight'] || keys['KeyD']) && player.x + player.width < canvas.width)
+                player.x = Math.min(canvas.width - player.width, player.x + player.speed);
+
+            // 장애물 스폰: 초반부터 빠르게, 최소 15프레임까지 감소
+            const spawnRate = Math.max(15, 20 - Math.floor(score / 10));
+            spawnTimer++;
+            if (spawnTimer >= spawnRate) {
+                spawnObstacle();
+                spawnTimer = 0;
+            }
+
+            // 아이템 스폰 (20초 = 1200프레임)
+            itemSpawnTimer++;
+            if (itemSpawnTimer >= 1200) {
+                spawnItem();
+                itemSpawnTimer = 0;
+            }
+
+            // 버프 타이머 (프레임 단위)
+            if (speedBuffTimer > 0) {
+                speedBuffTimer--;
+                if (speedBuffTimer <= 0) {
+                    speedBuffTimer = 0;
+                    player.speed = 7;
+                }
+            }
+            if (doubleScoreTimer > 0) doubleScoreTimer--;
+
+            // 점수 증가 (60프레임 = 1초)
+            scoreFrameCounter++;
+            if (scoreFrameCounter >= 60) {
+                score += (doubleScoreTimer > 0) ? 2 : 1;
+                scoreFrameCounter = 0;
+            }
+
+            // 아이템 이동 및 충돌
+            for (let i = items.length - 1; i >= 0; i--) {
+                const item = items[i];
+                item.y += item.speed;
+                const dx = (player.x + 25) - (item.x + item.width / 2);
+                const dy = (player.y + 25) - (item.y + item.height / 2);
+                const minR = 25 + item.width / 2;
+                if (dx * dx + dy * dy < minR * minR) {
+                    if (item.type === 'shield')          hasShield = true;
+                    else if (item.type === 'lightning') { player.speed = 11.5; speedBuffTimer = 300; }
+                    else if (item.type === 'star')        doubleScoreTimer = 360;
+                    items.splice(i, 1);
+                    continue;
+                }
+                if (item.y > canvas.height) items.splice(i, 1);
+            }
+
+            // 장애물 이동 및 충돌
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.y += obs.speed;
+                const dx = (player.x + 25) - (obs.x + obs.width / 2);
+                const dy = (player.y + 25) - (obs.y + obs.height / 2);
+                const minR = (25 + obs.width / 2) * 0.85;
+                if (dx * dx + dy * dy < minR * minR) {
+                    if (hasShield) {
+                        hasShield = false;
+                        obstacles.splice(i, 1);
+                    } else {
+                        lives--;
+                        obstacles.splice(i, 1);
+                        if (lives <= 0) { gameOver(); return; }
+                    }
+                    continue;
+                }
+                if (obs.y > canvas.height) obstacles.splice(i, 1);
+            }
+        }
+
+        // [최적화] ctx.font은 변경 시에만 설정 — 매 프레임 문자열 재할당 방지
+        let _currentFont = '';
+        function setFont(f) { if (_currentFont !== f) { ctx.font = f; _currentFont = f; } }
+
+        function draw() {
+            // alpha:false 캔버스에서는 fillRect가 clearRect보다 빠름
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 플레이어 색상
+            let currentPlayerColor = player.color;
+            if (speedBuffTimer > 0) currentPlayerColor = '#facc15';
+            if (hasShield) currentPlayerColor = '#22c55e';
+
+            // shadowBlur는 버프 상태일 때만
+            if (speedBuffTimer > 0) {
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = currentPlayerColor;
+            }
+
+            // 플레이어 (원형)
+            ctx.fillStyle = currentPlayerColor;
+            ctx.beginPath();
+            ctx.arc(player.x + player.width / 2, player.y + player.height / 2, player.width / 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (speedBuffTimer > 0) ctx.shadowBlur = 0;
+
+            // 장애물 (원형) — beginPath 하나로 묶어 한 번에 fill
+            ctx.fillStyle = '#f87171';
+            ctx.beginPath();
+            for (let i = 0; i < obstacles.length; i++) {
+                const obs = obstacles[i];
+                ctx.moveTo(obs.x + obs.width, obs.y + obs.height / 2);
+                ctx.arc(obs.x + obs.width / 2, obs.y + obs.height / 2, obs.width / 2, 0, Math.PI * 2);
+            }
+            ctx.fill();
+
+            // 아이템 렌더링 — OffscreenCanvas 캐시 이미지 사용
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                ctx.fillStyle = item.color;
+                ctx.beginPath();
+                ctx.arc(item.x + item.width / 2, item.y + item.height / 2, item.width / 2, 0, Math.PI * 2);
+                ctx.fill();
+
+                let icon = null;
+                if (item.type === 'shield')         icon = shieldIcon;
+                else if (item.type === 'lightning') icon = lightningIcon;
+                else if (item.type === 'star')      icon = x2Icon;
+                if (icon) ctx.drawImage(icon, item.x + (item.width - ICON_SIZE) / 2, item.y + (item.height - ICON_SIZE) / 2);
+            }
+
+            // 점수 표시
+            ctx.shadowBlur = 0;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillStyle = doubleScoreTimer > 0 ? '#facc15' : 'white';
+            setFont('bold 24px sans-serif');
+            ctx.fillText(`Score: ${score}${doubleScoreTimer > 0 ? ' (x2)' : ''}`, 20, 50);
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            setFont('18px sans-serif');
+            ctx.fillText(`Best: ${highScore}`, 20, 80);
+
+            // 목숨 표시 — 목숨 1개에 어울리는 디자인
+            // 하트 아이콘 + "목숨" 텍스트를 하나의 태그처럼 표시
+            const lifeX = 12, lifeY = 100;
+            const lifeR = 10; // 태그 모서리 반지름
+            const lifeW = 100, lifeH = 30;
+
+            // 배경 (반투명 pill)
+            ctx.fillStyle = lives > 0 ? 'rgba(239,68,68,0.18)' : 'rgba(100,100,100,0.18)';
+            ctx.beginPath();
+            ctx.moveTo(lifeX + lifeR, lifeY);
+            ctx.lineTo(lifeX + lifeW - lifeR, lifeY);
+            ctx.arcTo(lifeX + lifeW, lifeY, lifeX + lifeW, lifeY + lifeR, lifeR);
+            ctx.lineTo(lifeX + lifeW, lifeY + lifeH - lifeR);
+            ctx.arcTo(lifeX + lifeW, lifeY + lifeH, lifeX + lifeW - lifeR, lifeY + lifeH, lifeR);
+            ctx.lineTo(lifeX + lifeR, lifeY + lifeH);
+            ctx.arcTo(lifeX, lifeY + lifeH, lifeX, lifeY + lifeH - lifeR, lifeR);
+            ctx.lineTo(lifeX, lifeY + lifeR);
+            ctx.arcTo(lifeX, lifeY, lifeX + lifeR, lifeY, lifeR);
+            ctx.closePath();
+            ctx.fill();
+
+            // 하트 아이콘
+            ctx.drawImage(heartIcon, lifeX + 4, lifeY + (lifeH - 24) / 2, 24, 24);
+
+            // "× 1" 텍스트
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = lives > 0 ? '#fca5a5' : 'rgba(255,255,255,0.3)';
+            setFont('bold 15px sans-serif');
+            ctx.fillText('× 1', lifeX + 32, lifeY + lifeH / 2);
+
+            // ── 오른쪽 위 버프 패널 ──────────────────────────────
+            const buffs = [];
+            if (hasShield)         buffs.push({ icon: shieldIcon,    label: '보호막',    timer: null });
+            if (speedBuffTimer > 0) buffs.push({ icon: lightningIcon, label: '이속 UP',   timer: Math.ceil(speedBuffTimer / 60) });
+            if (doubleScoreTimer > 0) buffs.push({ icon: x2Icon,      label: '점수 x2',   timer: Math.ceil(doubleScoreTimer / 60) });
+
+            if (buffs.length > 0) {
+                const panelW = 140;
+                const rowH   = 38;
+                const padX   = canvas.width - panelW - 12;
+                const padY   = 12;
+
+                // 반투명 배경 박스
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+                ctx.beginPath();
+                const boxH = buffs.length * rowH + 8;
+                const bx = padX - 8, by = padY - 4, br = 10;
+                ctx.moveTo(bx + br, by);
+                ctx.lineTo(bx + panelW + 8 - br, by);
+                ctx.arcTo(bx + panelW + 8, by, bx + panelW + 8, by + br, br);
+                ctx.lineTo(bx + panelW + 8, by + boxH - br);
+                ctx.arcTo(bx + panelW + 8, by + boxH, bx + panelW + 8 - br, by + boxH, br);
+                ctx.lineTo(bx + br, by + boxH);
+                ctx.arcTo(bx, by + boxH, bx, by + boxH - br, br);
+                ctx.lineTo(bx, by + br);
+                ctx.arcTo(bx, by, bx + br, by, br);
+                ctx.closePath();
+                ctx.fill();
+
+                buffs.forEach((buff, idx) => {
+                    const rowY = padY + idx * rowH;
+                    // 아이콘
+                    ctx.drawImage(buff.icon, padX, rowY + 3, 28, 28);
+                    // 버프 이름
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillStyle = 'white';
+                    setFont('bold 13px sans-serif');
+                    ctx.fillText(buff.label, padX + 34, rowY + 11);
+                    // 남은 시간
+                    if (buff.timer !== null) {
+                        ctx.fillStyle = '#facc15';
+                        setFont('12px sans-serif');
+                        ctx.fillText(`${buff.timer}초`, padX + 34, rowY + 26);
+                    } else {
+                        ctx.fillStyle = '#22c55e';
+                        setFont('12px sans-serif');
+                        ctx.fillText('활성', padX + 34, rowY + 26);
+                    }
+                });
+            }
+        }
+
+        // 초기 메뉴 실행
+        initMenu();
+    </script>
+</body>
+</html>
